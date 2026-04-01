@@ -471,6 +471,166 @@ function UltraProcessedSection({
   );
 }
 
+// ── Results display ──────────────────────────────────────────────────────────
+
+function resolveRadioLabel(options: { value: string; label: string }[], value: string): string {
+  return options.find((o) => o.value === value)?.label ?? value;
+}
+
+function resolveCheckboxLabels(
+  options: { value: string; label: string }[],
+  values: string[],
+): string {
+  return values.map((v) => options.find((o) => o.value === v)?.label ?? v).join(", ");
+}
+
+function ResultRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="result-row">
+      <span className="result-row__label">{label}</span>
+      <span className="result-row__value">{value}</span>
+    </div>
+  );
+}
+
+function SectionResults({
+  section,
+  responses,
+}: {
+  section: SurveySection;
+  responses: SurveyResponses;
+}) {
+  if (section.type === "ffq") {
+    return (
+      <>
+        {foodFrequencyCategories.map((category) => (
+          <div key={category.id} className="results-subsection">
+            <p className="results-subsection__title">{category.title}</p>
+            <div className="results-ffq-table">
+              <div className="results-ffq-table__header">
+                <span>Besin</span>
+                <span>Sıklık</span>
+                <span>Miktar</span>
+                <span>Günlük</span>
+              </div>
+              {category.items.map((item) => {
+                const freq = getTextValue(responses, ffqKey(item.id, "frequency"));
+                const portion = getTextValue(responses, ffqKey(item.id, "portion"));
+                const daily = getTextValue(responses, ffqKey(item.id, "daily"));
+                const freqLabel = frequencyOptions.find((o) => o.value === freq)?.label ?? freq;
+                return (
+                  <div className="results-ffq-table__row" key={item.id}>
+                    <span>{item.label}</span>
+                    <span>{freqLabel || "—"}</span>
+                    <span>{portion || "—"}</span>
+                    <span>{daily || "—"}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </>
+    );
+  }
+
+  if (section.type === "upf") {
+    return (
+      <div className="results-upf-table">
+        {ultraProcessedItems.map((item) => {
+          const val = getTextValue(responses, upfKey(item.id));
+          return (
+            <div className="result-row" key={item.id}>
+              <span className="result-row__label">{item.group}</span>
+              <span className="result-row__value">
+                {val === "yes" ? "Evet" : val === "no" ? "Hayır" : "—"}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
+  return (
+    <>
+      {section.fields?.map((field) => {
+        if (field.type === "text" || field.type === "number" || field.type === "time" || field.type === "textarea") {
+          const val = getTextValue(responses, field.key);
+          if (!val) return null;
+          return <ResultRow key={field.key} label={field.label} value={val} />;
+        }
+
+        if (field.type === "radio") {
+          const val = getTextValue(responses, field.key);
+          if (!val) return null;
+          return (
+            <ResultRow
+              key={field.key}
+              label={field.label}
+              value={resolveRadioLabel(field.options, val)}
+            />
+          );
+        }
+
+        if (field.type === "checkbox") {
+          const vals = getArrayValue(responses, field.key);
+          if (!vals.length) return null;
+          return (
+            <ResultRow
+              key={field.key}
+              label={field.label}
+              value={resolveCheckboxLabels(field.options, vals)}
+            />
+          );
+        }
+
+        if (field.type === "matrix") {
+          const filled = field.rows.filter((row) =>
+            isValuePresent(responses[matrixKey(field.key, row.key)]),
+          );
+          if (!filled.length) return null;
+          return (
+            <div key={field.key} className="result-matrix">
+              <p className="result-matrix__label">{field.label}</p>
+              {field.rows.map((row) => {
+                const val = getTextValue(responses, matrixKey(field.key, row.key));
+                if (!val) return null;
+                return (
+                  <div className="result-matrix__row" key={row.key}>
+                    <span>{row.label}</span>
+                    <span>{resolveRadioLabel(field.columns, val)}</span>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        }
+
+        return null;
+      })}
+    </>
+  );
+}
+
+function SurveyResults({ responses }: { responses: SurveyResponses }) {
+  return (
+    <div className="results">
+      {surveySections.map((section) => (
+        <section key={section.id} className="results-section">
+          <h3 className="results-section__title">
+            <span className="results-section__eyebrow">{section.eyebrow}</span>
+            {section.title}
+          </h3>
+          <SectionResults section={section} responses={responses} />
+        </section>
+      ))}
+    </div>
+  );
+}
+
+// ── Main component ────────────────────────────────────────────────────────────
+
 export function SurveyForm() {
   const hasHydratedDraft = useRef(false);
   const skipNextDraftSave = useRef(false);
@@ -617,15 +777,31 @@ export function SurveyForm() {
   if (submissionState.type === "success") {
     return (
       <div className="success-screen">
-        <div className="success-screen__icon">✓</div>
-        <h2 className="success-screen__title">Yanıtlarınız kaydedildi</h2>
-        <p className="success-screen__lead">
-          Araştırmaya katılımınız için teşekkür ederiz. Yanıtlarınız anonim olarak
-          veritabanına güvenle iletildi.
-        </p>
-        <p className="success-screen__ref">
-          Referans no: <strong>{submissionState.referenceId}</strong>
-        </p>
+        <div className="success-screen__header">
+          <div className="success-screen__icon">✓</div>
+          <div>
+            <h2 className="success-screen__title">Yanıtlarınız kaydedildi</h2>
+            <p className="success-screen__lead">
+              Araştırmaya katılımınız için teşekkür ederiz. Yanıtlarınız anonim olarak
+              veritabanına güvenle iletildi.
+            </p>
+            <p className="success-screen__ref">
+              Referans no: <strong>{submissionState.referenceId}</strong>
+            </p>
+          </div>
+        </div>
+
+        <div className="success-screen__actions no-print">
+          <button
+            className="primary-button"
+            type="button"
+            onClick={() => window.print()}
+          >
+            PDF olarak indir
+          </button>
+        </div>
+
+        <SurveyResults responses={responses} />
       </div>
     );
   }
