@@ -19,6 +19,12 @@ export type AdminAccessResult =
   | { status: "forbidden"; user: User }
   | { status: "ok"; user: User; admin: AdminUserRecord };
 
+const isDuplicateKeyError = (error: unknown) =>
+  typeof error === "object" &&
+  error !== null &&
+  "code" in error &&
+  (error as { code?: string }).code === "23505";
+
 export const getSupabaseSessionClient = async () => {
   const cookieStore = await cookies();
 
@@ -68,6 +74,20 @@ const ensureFirstAdminUser = async (user: User) => {
     .single();
 
   if (insertError) {
+    if (isDuplicateKeyError(insertError)) {
+      const { data: existing, error: existingError } = await supabase
+        .from("admin_users")
+        .select("*")
+        .eq("user_id", user.id)
+        .maybeSingle();
+
+      if (existingError) {
+        throw existingError;
+      }
+
+      return (existing as AdminUserRecord | null) ?? null;
+    }
+
     throw insertError;
   }
 

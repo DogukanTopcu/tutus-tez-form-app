@@ -126,6 +126,12 @@ export type AnalyticsPayload = {
   availableVersions: SurveyVersionMeta[];
 };
 
+const isDuplicateKeyError = (error: unknown) =>
+  typeof error === "object" &&
+  error !== null &&
+  "code" in error &&
+  (error as { code?: string }).code === "23505";
+
 const mapVersionRow = (row: SurveyVersionRow): SurveyVersion => ({
   id: row.id,
   versionNumber: row.version_number,
@@ -209,18 +215,27 @@ const mapVersions = async () => {
   return ((data ?? []) as SurveyVersionRow[]).map(mapVersionRow);
 };
 
+const backfillLegacyResponses = async (version: SurveyVersion) => {
+  const supabase = getSupabaseAdminClient();
+  const { error } = await supabase
+    .from("survey_responses")
+    .update({
+      survey_version_id: version.id,
+      survey_snapshot: version.schema,
+    })
+    .is("survey_version_id", null);
+
+  if (error) {
+    throw error;
+  }
+};
+
 export const ensureSurveyBootstrap = async () => {
   const existingVersions = await mapVersions();
   if (existingVersions.length > 0) {
-    const fallbackVersion = existingVersions.find((version) => version.status === "published") ?? existingVersions[0];
-    const supabase = getSupabaseAdminClient();
-    await supabase
-      .from("survey_responses")
-      .update({
-        survey_version_id: fallbackVersion.id,
-        survey_snapshot: fallbackVersion.schema,
-      })
-      .is("survey_version_id", null);
+    const fallbackVersion =
+      existingVersions.find((version) => version.status === "published") ?? existingVersions[0];
+    await backfillLegacyResponses(fallbackVersion);
     return existingVersions;
   }
 
@@ -237,17 +252,21 @@ export const ensureSurveyBootstrap = async () => {
     .single();
 
   if (error) {
+    if (isDuplicateKeyError(error)) {
+      const racedVersions = await mapVersions();
+      if (racedVersions.length > 0) {
+        const fallbackVersion =
+          racedVersions.find((version) => version.status === "published") ?? racedVersions[0];
+        await backfillLegacyResponses(fallbackVersion);
+        return racedVersions;
+      }
+    }
+
     throw error;
   }
 
   const version = mapVersionRow(data as SurveyVersionRow);
-  await supabase
-    .from("survey_responses")
-    .update({
-      survey_version_id: version.id,
-      survey_snapshot: version.schema,
-    })
-    .is("survey_version_id", null);
+  await backfillLegacyResponses(version);
 
   return [version];
 };
@@ -313,6 +332,24 @@ export const getOrCreateDraftSurveyVersion = async (createdBy: string | null = n
     .single();
 
   if (insertError) {
+    if (isDuplicateKeyError(insertError)) {
+      const { data: racedDraft, error: racedDraftError } = await supabase
+        .from("survey_versions")
+        .select("id, version_number, status, published_at, created_at, updated_at, created_by, schema")
+        .eq("status", "draft")
+        .order("version_number", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (racedDraftError) {
+        throw racedDraftError;
+      }
+
+      if (racedDraft) {
+        return mapVersionRow(racedDraft as SurveyVersionRow);
+      }
+    }
+
     throw insertError;
   }
 
@@ -356,6 +393,24 @@ export const saveDraftSurveySchema = async (schema: SurveySchema, userId: string
     .single();
 
   if (error) {
+    if (isDuplicateKeyError(error)) {
+      const { data: publishedVersion, error: publishedVersionError } = await supabase
+        .from("survey_versions")
+        .select("id, version_number, status, published_at, created_at, updated_at, created_by, schema")
+        .eq("status", "published")
+        .order("version_number", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (publishedVersionError) {
+        throw publishedVersionError;
+      }
+
+      if (publishedVersion) {
+        return mapVersionRow(publishedVersion as SurveyVersionRow);
+      }
+    }
+
     throw error;
   }
 
