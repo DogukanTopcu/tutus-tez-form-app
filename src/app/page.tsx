@@ -1,19 +1,23 @@
 import { SurveyForm } from "@/components/SurveyForm";
+import { createDefaultSurveySchema } from "@/lib/survey-schema";
+import { getPublishedSurveyVersion } from "@/lib/survey-store";
 
-export default function Home() {
+export const dynamic = "force-dynamic";
+
+export default async function Home() {
+  const publishedVersion = await getPublishedSurveyVersion().catch(() => null);
+  const schema = publishedVersion?.schema ?? createDefaultSurveySchema();
+  const versionId = publishedVersion?.id ?? "local-fallback";
+
   return (
     <main className="page-shell">
       <header className="page-header">
-        <h1>Gemicilerde Beslenme ve Uyku Kalitesi Anketi</h1>
-        <p className="page-lead">
-          Bu form, denizcilik sektöründe çalışan bireylerin beslenme alışkanlıkları ve uyku
-          kalitesi üzerine yürütülen akademik bir araştırma kapsamında hazırlanmıştır. Tüm
-          yanıtlar anonimdir.
-        </p>
-        <span className="time-badge">≈ 12–18 dakika</span>
+        <h1>{schema.title}</h1>
+        <p className="page-lead">{schema.description}</p>
+        <span className="time-badge">≈ {schema.estimatedMinutes} dakika</span>
       </header>
 
-      <SurveyForm />
+      <SurveyForm mode="public" schema={schema} versionId={versionId} />
     </main>
   );
 }

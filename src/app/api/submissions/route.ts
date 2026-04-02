@@ -1,48 +1,30 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import {
-  calculateBodyMassIndex,
-  calculatePsqiScore,
-  calculateUltraProcessedCount,
-  getNumberValue,
-  getTextValue,
-  type SurveyResponses,
-} from "@/lib/survey";
 import { getSupabaseAdminClient } from "@/lib/supabase";
+import { buildSubmissionInsert, getPublishedSurveyVersion } from "@/lib/survey-store";
 
 const submissionSchema = z.object({
+  surveyVersionId: z.string().optional(),
   responses: z.record(z.string(), z.union([z.string(), z.array(z.string())])),
 });
-
-const buildProfile = (responses: SurveyResponses) => {
-  const age = getNumberValue(responses, "age");
-  const heightCm = getNumberValue(responses, "height_cm");
-  const weightKg = getNumberValue(responses, "weight_kg");
-
-  return {
-    participantCode: getTextValue(responses, "participant_code") || null,
-    age,
-    gender: getTextValue(responses, "gender") || null,
-    genderOther: getTextValue(responses, "gender_other") || null,
-    role: getTextValue(responses, "role") || null,
-    nationality: getTextValue(responses, "nationality") || null,
-    shiftType: getTextValue(responses, "shift_type") || null,
-    seaServiceYears: getNumberValue(responses, "sea_service_years"),
-    seaServiceMonths: getNumberValue(responses, "sea_service_months"),
-    daysWithoutShore: getNumberValue(responses, "days_without_shore"),
-    heightCm,
-    weightKg,
-    consent: getTextValue(responses, "consent") === "yes",
-    bmi: calculateBodyMassIndex(heightCm, weightKg),
-  };
-};
 
 export async function POST(request: Request) {
   try {
     const body = submissionSchema.parse(await request.json());
-    const responses = body.responses;
-    const profile = buildProfile(responses);
+    const publishedVersion = await getPublishedSurveyVersion();
+
+    if (body.surveyVersionId && body.surveyVersionId !== publishedVersion.id) {
+      return NextResponse.json(
+        {
+          error:
+            "Form bu sırada güncellendi. Lütfen sayfayı yenileyip en son sürüm ile yeniden deneyin.",
+        },
+        { status: 409 },
+      );
+    }
+
+    const { insert, profile } = buildSubmissionInsert(publishedVersion, body.responses);
 
     if (!profile.consent) {
       return NextResponse.json(
@@ -54,41 +36,15 @@ export async function POST(request: Request) {
       );
     }
 
-    const psqiScore = calculatePsqiScore(responses);
-    const ultraProcessedYesCount = calculateUltraProcessedCount(responses);
-    const stoolType = getNumberValue(responses, "bristol_stool_type");
-
     const supabase = getSupabaseAdminClient();
     const { data, error } = await supabase
       .from("survey_responses")
-      .insert({
-        age: profile.age,
-        gender: profile.gender,
-        nationality: profile.nationality,
-        role: profile.role,
-        shift_type: profile.shiftType,
-        height_cm: profile.heightCm,
-        weight_kg: profile.weightKg,
-        bmi: profile.bmi,
-        stool_type: stoolType,
-        psqi_score: psqiScore,
-        ultra_processed_yes_count: ultraProcessedYesCount,
-        consent_confirmed: true,
-        profile,
-        analytics: {
-          psqiScore,
-          ultraProcessedYesCount,
-          stoolType,
-        },
-        responses,
-        source: "public-web",
-      })
+      .insert(insert)
       .select("id")
       .single();
 
     if (error) {
       console.error("Supabase insert failed", error);
-
       return NextResponse.json(
         {
           error:
@@ -111,7 +67,6 @@ export async function POST(request: Request) {
     }
 
     console.error("Submission route failed", error);
-
     return NextResponse.json(
       {
         error:

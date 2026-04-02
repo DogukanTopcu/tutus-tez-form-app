@@ -3,29 +3,35 @@
 import { useEffect, useRef, useState, useTransition } from "react";
 
 import {
-  DRAFT_STORAGE_KEY,
   ffqKey,
-  foodFrequencyCategories,
-  frequencyOptions,
+  fieldIsRequired,
+  fieldIsVisible,
   getArrayValue,
+  getDraftStorageKey,
+  getSectionValidationMessage,
   getTextValue,
   isValuePresent,
   matrixKey,
-  surveySections,
-  type CheckboxField,
-  type MatrixField,
-  type SurveyField,
-  type SurveyResponses,
-  type SurveySection,
-  ultraProcessedItems,
+  sectionIsComplete,
   upfKey,
-} from "@/lib/survey";
+  type CheckboxFieldDefinition,
+  type SurveyFieldDefinition,
+  type SurveyResponses,
+  type SurveySchema,
+  type SurveySectionDefinition,
+} from "@/lib/survey-schema";
 
 type SubmissionState =
   | { type: "idle" }
   | { type: "success"; referenceId: string };
 
-type Toast = { id: number; message: string; kind: "warning" | "error" };
+type Toast = { id: number; message: string; kind: "warning" | "error" | "info" };
+
+type SurveyFormProps = {
+  schema: SurveySchema;
+  versionId: string;
+  mode?: "public" | "preview";
+};
 
 const formatSavedAt = (timestamp: number | null) => {
   if (!timestamp) return "Henüz yerel taslak oluşmadı";
@@ -43,141 +49,50 @@ const scrollToTop = () => {
   }
 };
 
-const isCheckboxField = (field: SurveyField): field is CheckboxField => field.type === "checkbox";
-const isMatrixField = (field: SurveyField): field is MatrixField => field.type === "matrix";
+const resolveRadioLabel = (
+  options: { value: string; label: string }[],
+  value: string,
+): string => options.find((option) => option.value === value)?.label ?? value;
 
-const getFieldValidationMessage = (
-  field: SurveyField,
-  responses: SurveyResponses,
-): string | null => {
-  if (!field.required) return null;
-
-  if (isMatrixField(field)) {
-    const missingRow = field.rows.find(
-      (row) => !isValuePresent(responses[matrixKey(field.key, row.key)]),
-    );
-    return missingRow
-      ? `"${field.label}" bölümünde "${missingRow.label}" satırını doldurun.`
-      : null;
-  }
-
-  if (isCheckboxField(field)) {
-    return getArrayValue(responses, field.key).length > 0
-      ? null
-      : `"${field.label}" sorusunda en az bir seçim yapın.`;
-  }
-
-  return isValuePresent(responses[field.key]) ? null : `"${field.label}" alanını doldurun.`;
-};
-
-const getSectionValidationMessage = (
-  section: SurveySection,
-  responses: SurveyResponses,
-): string | null => {
-  if (section.type === "ffq") {
-    for (const category of foodFrequencyCategories) {
-      for (const item of category.items) {
-        const frequency = getTextValue(responses, ffqKey(item.id, "frequency"));
-        const portion = getTextValue(responses, ffqKey(item.id, "portion"));
-        if (!frequency) return `"${item.label}" için tüketim sıklığını seçin.`;
-        if (frequency !== "never" && !portion)
-          return `"${item.label}" için bir seferde tüketilen miktarı yazın.`;
-      }
-    }
-    return null;
-  }
-
-  if (section.type === "upf") {
-    const missingItem = ultraProcessedItems.find(
-      (item) => !isValuePresent(responses[upfKey(item.id)]),
-    );
-    return missingItem ? `"${missingItem.group}" için Evet/Hayır seçimi yapın.` : null;
-  }
-
-  for (const field of section.fields ?? []) {
-    const msg = getFieldValidationMessage(field, responses);
-    if (msg) return msg;
-  }
-
-  if (section.id === "participant") {
-    if (getTextValue(responses, "consent") !== "yes")
-      return "Yanıtları kaydetmek için anonim araştırma kullanım onayı gereklidir.";
-    if (getTextValue(responses, "gender") === "other" && !getTextValue(responses, "gender_other"))
-      return '"Diğer cinsiyet açıklaması" alanını doldurun.';
-  }
-
-  if (
-    section.id === "stress" &&
-    getTextValue(responses, "port_habit_change") === "yes" &&
-    !getTextValue(responses, "port_habit_change_note")
-  )
-    return '"Limanlara yanaşıldığında beslenme alışkanlığınız değişir mi?" sorusu için kısa bir açıklama yazın.';
-
-  if (
-    section.id === "food-access" &&
-    getArrayValue(responses, "snack_reasons").includes("other") &&
-    !getTextValue(responses, "snack_reasons_other")
-  )
-    return '"Diğer neden açıklaması" alanını doldurun.';
-
-  if (section.id === "preferences") {
-    if (
-      getArrayValue(responses, "cooking_methods").includes("other") &&
-      !getTextValue(responses, "cooking_methods_other")
-    )
-      return '"Diğer pişirme yöntemi" alanını doldurun.';
-    if (
-      getTextValue(responses, "oil_type") === "other" &&
-      !getTextValue(responses, "oil_type_other")
-    )
-      return '"Diğer yağ türü" alanını doldurun.';
-    if (
-      getArrayValue(responses, "preferred_snacks").includes("other") &&
-      !getTextValue(responses, "preferred_snacks_other")
-    )
-      return '"Diğer atıştırmalık" alanını doldurun.';
-  }
-
-  if (
-    section.id === "sleep" &&
-    getTextValue(responses, matrixKey("sleep_problems", "other")) !== "0" &&
-    !getTextValue(responses, "sleep_other_reason")
-  )
-    return '"Diğer uyku sorunu nedeni" alanını doldurun.';
-
-  return null;
-};
-
-const sectionIsComplete = (section: SurveySection, responses: SurveyResponses) =>
-  getSectionValidationMessage(section, responses) === null;
+const resolveCheckboxLabels = (
+  options: { value: string; label: string }[],
+  values: string[],
+): string =>
+  values.map((value) => options.find((option) => option.value === value)?.label ?? value).join(", ");
 
 type RenderFieldProps = {
-  field: SurveyField;
+  field: SurveyFieldDefinition;
   responses: SurveyResponses;
   onValueChange: (key: string, value: string) => void;
-  onCheckboxToggle: (field: CheckboxField, optionValue: string) => void;
+  onCheckboxToggle: (field: CheckboxFieldDefinition, optionValue: string) => void;
 };
 
 function RenderField({ field, responses, onValueChange, onCheckboxToggle }: RenderFieldProps) {
+  if (!fieldIsVisible(field, responses)) {
+    return null;
+  }
+
+  const required = fieldIsRequired(field, responses);
+
   if (field.type === "text" || field.type === "number" || field.type === "time") {
     return (
       <label className="question-card">
         <span className="question-card__label">
           {field.label}
-          {field.required ? <span className="required-mark">*</span> : null}
+          {required ? <span className="required-mark">*</span> : null}
         </span>
         {field.description ? (
           <span className="question-card__description">{field.description}</span>
         ) : null}
         <input
           className="input-control"
-          min={field.min}
           max={field.max}
+          min={field.min}
+          placeholder={field.placeholder}
           step={field.step}
           type={field.type}
           value={getTextValue(responses, field.key)}
-          placeholder={field.placeholder}
-          onChange={(e) => onValueChange(field.key, e.target.value)}
+          onChange={(event) => onValueChange(field.key, event.target.value)}
         />
       </label>
     );
@@ -186,16 +101,19 @@ function RenderField({ field, responses, onValueChange, onCheckboxToggle }: Rend
   if (field.type === "textarea") {
     return (
       <label className="question-card">
-        <span className="question-card__label">{field.label}</span>
+        <span className="question-card__label">
+          {field.label}
+          {required ? <span className="required-mark">*</span> : null}
+        </span>
         {field.description ? (
           <span className="question-card__description">{field.description}</span>
         ) : null}
         <textarea
           className="textarea-control"
+          placeholder={field.placeholder}
           rows={4}
           value={getTextValue(responses, field.key)}
-          placeholder={field.placeholder}
-          onChange={(e) => onValueChange(field.key, e.target.value)}
+          onChange={(event) => onValueChange(field.key, event.target.value)}
         />
       </label>
     );
@@ -206,20 +124,20 @@ function RenderField({ field, responses, onValueChange, onCheckboxToggle }: Rend
       <fieldset className="question-card">
         <legend className="question-card__label">
           {field.label}
-          {field.required ? <span className="required-mark">*</span> : null}
+          {required ? <span className="required-mark">*</span> : null}
         </legend>
         {field.description ? (
           <p className="question-card__description">{field.description}</p>
         ) : null}
         <div className={`option-grid option-grid--${field.columns ?? 2}`}>
           {field.options.map((option) => (
-            <label className="option-card" key={option.value}>
+            <label className="option-card" key={option.id}>
               <input
                 checked={getTextValue(responses, field.key) === option.value}
                 name={field.key}
                 type="radio"
                 value={option.value}
-                onChange={(e) => onValueChange(field.key, e.target.value)}
+                onChange={(event) => onValueChange(field.key, event.target.value)}
               />
               <span className="option-card__content">
                 <span className="option-card__label">{option.label}</span>
@@ -240,7 +158,7 @@ function RenderField({ field, responses, onValueChange, onCheckboxToggle }: Rend
       <fieldset className="question-card">
         <legend className="question-card__label">
           {field.label}
-          {field.required ? <span className="required-mark">*</span> : null}
+          {required ? <span className="required-mark">*</span> : null}
         </legend>
         {field.description ? (
           <p className="question-card__description">{field.description}</p>
@@ -257,7 +175,7 @@ function RenderField({ field, responses, onValueChange, onCheckboxToggle }: Rend
             return (
               <label
                 className={`option-card${shouldDisable ? " option-card--disabled" : ""}`}
-                key={option.value}
+                key={option.id}
               >
                 <input
                   checked={isChecked}
@@ -283,7 +201,7 @@ function RenderField({ field, responses, onValueChange, onCheckboxToggle }: Rend
       <fieldset className="question-card">
         <legend className="question-card__label">
           {field.label}
-          {field.required ? <span className="required-mark">*</span> : null}
+          {required ? <span className="required-mark">*</span> : null}
         </legend>
         {field.description ? (
           <p className="question-card__description">{field.description}</p>
@@ -291,30 +209,30 @@ function RenderField({ field, responses, onValueChange, onCheckboxToggle }: Rend
         <div className="matrix-grid">
           <div className="matrix-grid__header">
             <span className="matrix-grid__header-spacer">Durum</span>
-            {field.columns.map((col) => (
-              <span className="matrix-grid__header-cell" key={col.value}>
-                {col.label}
+            {field.columns.map((column) => (
+              <span className="matrix-grid__header-cell" key={column.id}>
+                {column.label}
               </span>
             ))}
           </div>
           {field.rows.map((row) => (
-            <div className="matrix-grid__row" key={row.key}>
+            <div className="matrix-grid__row" key={row.id}>
               <span className="matrix-grid__row-label">{row.label}</span>
               <div className="matrix-grid__choices">
-                {field.columns.map((col) => (
-                  <label className="matrix-grid__choice" key={col.value}>
+                {field.columns.map((column) => (
+                  <label className="matrix-grid__choice" key={column.id}>
                     <input
                       checked={
-                        getTextValue(responses, matrixKey(field.key, row.key)) === col.value
+                        getTextValue(responses, matrixKey(field.key, row.key)) === column.value
                       }
                       name={matrixKey(field.key, row.key)}
                       type="radio"
-                      value={col.value}
-                      onChange={(e) =>
-                        onValueChange(matrixKey(field.key, row.key), e.target.value)
+                      value={column.value}
+                      onChange={(event) =>
+                        onValueChange(matrixKey(field.key, row.key), event.target.value)
                       }
                     />
-                    <span>{col.label}</span>
+                    <span>{column.label}</span>
                   </label>
                 ))}
               </div>
@@ -329,9 +247,11 @@ function RenderField({ field, responses, onValueChange, onCheckboxToggle }: Rend
 }
 
 function FoodFrequencySection({
+  schema,
   responses,
   onValueChange,
 }: {
+  schema: SurveySchema;
   responses: SurveyResponses;
   onValueChange: (key: string, value: string) => void;
 }) {
@@ -344,7 +264,7 @@ function FoodFrequencySection({
           yazın. Günlük karşılık alanı isteğe bağlıdır ve analiz kolaylığı sağlar.
         </p>
       </div>
-      {foodFrequencyCategories.map((category) => (
+      {schema.ffqCategories.map((category) => (
         <section className="ffq-category" key={category.id}>
           <header className="ffq-category__header">
             <h3>{category.title}</h3>
@@ -352,7 +272,7 @@ function FoodFrequencySection({
           </header>
           <div className="ffq-items">
             {category.items.map((item) => {
-              const frequency = getTextValue(responses, ffqKey(item.id, "frequency"));
+              const frequency = getTextValue(responses, ffqKey(item.key, "frequency"));
               return (
                 <article className="ffq-item" key={item.id}>
                   <div className="ffq-item__meta">
@@ -368,12 +288,23 @@ function FoodFrequencySection({
                       <select
                         className="select-control"
                         value={frequency}
-                        onChange={(e) => onValueChange(ffqKey(item.id, "frequency"), e.target.value)}
+                        onChange={(event) =>
+                          onValueChange(ffqKey(item.key, "frequency"), event.target.value)
+                        }
                       >
                         <option value="">Seçiniz</option>
-                        {frequencyOptions.map((opt) => (
-                          <option key={opt.value} value={opt.value}>
-                            {opt.label}
+                        {[
+                          { value: "never", label: "Hiç / yılda 1" },
+                          { value: "monthly_1_3", label: "Ayda 1-3 kez" },
+                          { value: "weekly_1_2", label: "Haftada 1-2 kez" },
+                          { value: "weekly_3_4", label: "Haftada 3-4 kez" },
+                          { value: "weekly_5_6", label: "Haftada 5-6 kez" },
+                          { value: "daily_1", label: "Günde 1 kez" },
+                          { value: "daily_2", label: "Günde 2 kez" },
+                          { value: "every_meal", label: "Her öğün +" },
+                        ].map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
                           </option>
                         ))}
                       </select>
@@ -389,8 +320,10 @@ function FoodFrequencySection({
                         className="input-control"
                         placeholder={item.portionHint}
                         type="text"
-                        value={getTextValue(responses, ffqKey(item.id, "portion"))}
-                        onChange={(e) => onValueChange(ffqKey(item.id, "portion"), e.target.value)}
+                        value={getTextValue(responses, ffqKey(item.key, "portion"))}
+                        onChange={(event) =>
+                          onValueChange(ffqKey(item.key, "portion"), event.target.value)
+                        }
                       />
                     </label>
                     <label className="question-card question-card--compact">
@@ -399,8 +332,10 @@ function FoodFrequencySection({
                         className="input-control"
                         placeholder="İsteğe bağlı"
                         type="text"
-                        value={getTextValue(responses, ffqKey(item.id, "daily"))}
-                        onChange={(e) => onValueChange(ffqKey(item.id, "daily"), e.target.value)}
+                        value={getTextValue(responses, ffqKey(item.key, "daily"))}
+                        onChange={(event) =>
+                          onValueChange(ffqKey(item.key, "daily"), event.target.value)
+                        }
                       />
                     </label>
                   </div>
@@ -415,9 +350,11 @@ function FoodFrequencySection({
 }
 
 function UltraProcessedSection({
+  schema,
   responses,
   onValueChange,
 }: {
+  schema: SurveySchema;
   responses: SurveyResponses;
   onValueChange: (key: string, value: string) => void;
 }) {
@@ -431,7 +368,7 @@ function UltraProcessedSection({
         </p>
       </div>
       <div className="upf-grid">
-        {ultraProcessedItems.map((item) => (
+        {schema.upfItems.map((item) => (
           <article className="upf-card" key={item.id}>
             <div>
               <p className="upf-card__group">{item.group}</p>
@@ -441,11 +378,11 @@ function UltraProcessedSection({
             <div className="option-grid option-grid--2">
               <label className="option-card">
                 <input
-                  checked={getTextValue(responses, upfKey(item.id)) === "yes"}
-                  name={upfKey(item.id)}
+                  checked={getTextValue(responses, upfKey(item.key)) === "yes"}
+                  name={upfKey(item.key)}
                   type="radio"
                   value="yes"
-                  onChange={(e) => onValueChange(upfKey(item.id), e.target.value)}
+                  onChange={(event) => onValueChange(upfKey(item.key), event.target.value)}
                 />
                 <span className="option-card__content">
                   <span className="option-card__label">Evet</span>
@@ -453,11 +390,11 @@ function UltraProcessedSection({
               </label>
               <label className="option-card">
                 <input
-                  checked={getTextValue(responses, upfKey(item.id)) === "no"}
-                  name={upfKey(item.id)}
+                  checked={getTextValue(responses, upfKey(item.key)) === "no"}
+                  name={upfKey(item.key)}
                   type="radio"
                   value="no"
-                  onChange={(e) => onValueChange(upfKey(item.id), e.target.value)}
+                  onChange={(event) => onValueChange(upfKey(item.key), event.target.value)}
                 />
                 <span className="option-card__content">
                   <span className="option-card__label">Hayır</span>
@@ -471,19 +408,6 @@ function UltraProcessedSection({
   );
 }
 
-// ── Results display ──────────────────────────────────────────────────────────
-
-function resolveRadioLabel(options: { value: string; label: string }[], value: string): string {
-  return options.find((o) => o.value === value)?.label ?? value;
-}
-
-function resolveCheckboxLabels(
-  options: { value: string; label: string }[],
-  values: string[],
-): string {
-  return values.map((v) => options.find((o) => o.value === v)?.label ?? v).join(", ");
-}
-
 function ResultRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="result-row">
@@ -495,15 +419,17 @@ function ResultRow({ label, value }: { label: string; value: string }) {
 
 function SectionResults({
   section,
+  schema,
   responses,
 }: {
-  section: SurveySection;
+  section: SurveySectionDefinition;
+  schema: SurveySchema;
   responses: SurveyResponses;
 }) {
   if (section.type === "ffq") {
     return (
       <>
-        {foodFrequencyCategories.map((category) => (
+        {schema.ffqCategories.map((category) => (
           <div key={category.id} className="results-subsection">
             <p className="results-subsection__title">{category.title}</p>
             <div className="results-ffq-table">
@@ -513,20 +439,14 @@ function SectionResults({
                 <span>Miktar</span>
                 <span>Günlük</span>
               </div>
-              {category.items.map((item) => {
-                const freq = getTextValue(responses, ffqKey(item.id, "frequency"));
-                const portion = getTextValue(responses, ffqKey(item.id, "portion"));
-                const daily = getTextValue(responses, ffqKey(item.id, "daily"));
-                const freqLabel = frequencyOptions.find((o) => o.value === freq)?.label ?? freq;
-                return (
-                  <div className="results-ffq-table__row" key={item.id}>
-                    <span>{item.label}</span>
-                    <span>{freqLabel || "—"}</span>
-                    <span>{portion || "—"}</span>
-                    <span>{daily || "—"}</span>
-                  </div>
-                );
-              })}
+              {category.items.map((item) => (
+                <div className="results-ffq-table__row" key={item.id}>
+                  <span>{item.label}</span>
+                  <span>{getTextValue(responses, ffqKey(item.key, "frequency")) || "—"}</span>
+                  <span>{getTextValue(responses, ffqKey(item.key, "portion")) || "—"}</span>
+                  <span>{getTextValue(responses, ffqKey(item.key, "daily")) || "—"}</span>
+                </div>
+              ))}
             </div>
           </div>
         ))}
@@ -537,13 +457,13 @@ function SectionResults({
   if (section.type === "upf") {
     return (
       <div className="results-upf-table">
-        {ultraProcessedItems.map((item) => {
-          const val = getTextValue(responses, upfKey(item.id));
+        {schema.upfItems.map((item) => {
+          const value = getTextValue(responses, upfKey(item.key));
           return (
             <div className="result-row" key={item.id}>
               <span className="result-row__label">{item.group}</span>
               <span className="result-row__value">
-                {val === "yes" ? "Evet" : val === "no" ? "Hayır" : "—"}
+                {value === "yes" ? "Evet" : value === "no" ? "Hayır" : "—"}
               </span>
             </div>
           );
@@ -556,50 +476,51 @@ function SectionResults({
     <>
       {section.fields?.map((field) => {
         if (field.type === "text" || field.type === "number" || field.type === "time" || field.type === "textarea") {
-          const val = getTextValue(responses, field.key);
-          if (!val) return null;
-          return <ResultRow key={field.key} label={field.label} value={val} />;
+          const value = getTextValue(responses, field.key);
+          if (!value) return null;
+          return <ResultRow key={field.id} label={field.label} value={value} />;
         }
 
         if (field.type === "radio") {
-          const val = getTextValue(responses, field.key);
-          if (!val) return null;
+          const value = getTextValue(responses, field.key);
+          if (!value) return null;
           return (
             <ResultRow
-              key={field.key}
+              key={field.id}
               label={field.label}
-              value={resolveRadioLabel(field.options, val)}
+              value={resolveRadioLabel(field.options, value)}
             />
           );
         }
 
         if (field.type === "checkbox") {
-          const vals = getArrayValue(responses, field.key);
-          if (!vals.length) return null;
+          const values = getArrayValue(responses, field.key);
+          if (!values.length) return null;
           return (
             <ResultRow
-              key={field.key}
+              key={field.id}
               label={field.label}
-              value={resolveCheckboxLabels(field.options, vals)}
+              value={resolveCheckboxLabels(field.options, values)}
             />
           );
         }
 
         if (field.type === "matrix") {
-          const filled = field.rows.filter((row) =>
+          const filledRows = field.rows.filter((row) =>
             isValuePresent(responses[matrixKey(field.key, row.key)]),
           );
-          if (!filled.length) return null;
+          if (!filledRows.length) return null;
+
           return (
-            <div key={field.key} className="result-matrix">
+            <div key={field.id} className="result-matrix">
               <p className="result-matrix__label">{field.label}</p>
               {field.rows.map((row) => {
-                const val = getTextValue(responses, matrixKey(field.key, row.key));
-                if (!val) return null;
+                const value = getTextValue(responses, matrixKey(field.key, row.key));
+                if (!value) return null;
                 return (
-                  <div className="result-matrix__row" key={row.key}>
+                  <div className="result-matrix__row" key={row.id}>
                     <span>{row.label}</span>
-                    <span>{resolveRadioLabel(field.columns, val)}</span>
+                    <span>{resolveRadioLabel(field.columns, value)}</span>
                   </div>
                 );
               })}
@@ -613,25 +534,35 @@ function SectionResults({
   );
 }
 
-function SurveyResults({ responses }: { responses: SurveyResponses }) {
+export function SurveyResults({
+  schema,
+  responses,
+}: {
+  schema: SurveySchema;
+  responses: SurveyResponses;
+}) {
   return (
     <div className="results">
-      {surveySections.map((section) => (
+      {schema.sections.map((section) => (
         <section key={section.id} className="results-section">
           <h3 className="results-section__title">
             <span className="results-section__eyebrow">{section.eyebrow}</span>
             {section.title}
           </h3>
-          <SectionResults section={section} responses={responses} />
+          <SectionResults responses={responses} schema={schema} section={section} />
         </section>
       ))}
     </div>
   );
 }
 
-// ── Main component ────────────────────────────────────────────────────────────
-
-export function SurveyForm() {
+export function SurveyForm({
+  schema,
+  versionId,
+  mode = "public",
+}: SurveyFormProps) {
+  const isPreview = mode === "preview";
+  const draftStorageKey = getDraftStorageKey(versionId);
   const hasHydratedDraft = useRef(false);
   const skipNextDraftSave = useRef(false);
   const toastIdRef = useRef(0);
@@ -646,94 +577,126 @@ export function SurveyForm() {
 
   const addToast = (message: string, kind: Toast["kind"]) => {
     const id = ++toastIdRef.current;
-    setToasts((prev) => [...prev, { id, message, kind }]);
-    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 5000);
+    setToasts((current) => [...current, { id, message, kind }]);
+    setTimeout(() => setToasts((current) => current.filter((toast) => toast.id !== id)), 5000);
   };
 
-  const dismissToast = (id: number) => setToasts((prev) => prev.filter((t) => t.id !== id));
+  const dismissToast = (id: number) =>
+    setToasts((current) => current.filter((toast) => toast.id !== id));
 
   useEffect(() => {
-    const rawDraft = window.localStorage.getItem(DRAFT_STORAGE_KEY);
-    if (!rawDraft) return;
+    if (isPreview) {
+      hasHydratedDraft.current = true;
+      return;
+    }
+
+    const rawDraft = window.localStorage.getItem(draftStorageKey);
+    if (!rawDraft) {
+      hasHydratedDraft.current = true;
+      return;
+    }
+
     try {
       const parsed = JSON.parse(rawDraft) as {
         responses?: SurveyResponses;
         currentSectionIndex?: number;
         savedAt?: number;
       };
+
       setResponses(parsed.responses ?? {});
-      setCurrentSectionIndex(
-        Math.min(parsed.currentSectionIndex ?? 0, surveySections.length - 1),
-      );
+      setCurrentSectionIndex(Math.min(parsed.currentSectionIndex ?? 0, schema.sections.length - 1));
       setSavedAt(parsed.savedAt ?? null);
     } catch {
-      window.localStorage.removeItem(DRAFT_STORAGE_KEY);
+      window.localStorage.removeItem(draftStorageKey);
     }
+
     hasHydratedDraft.current = true;
-  }, []);
+  }, [draftStorageKey, isPreview, schema.sections.length]);
 
   useEffect(() => {
-    if (!hasHydratedDraft.current) return;
+    if (!hasHydratedDraft.current || isPreview) return;
     if (skipNextDraftSave.current) {
       skipNextDraftSave.current = false;
       return;
     }
+
     const now = Date.now();
     window.localStorage.setItem(
-      DRAFT_STORAGE_KEY,
+      draftStorageKey,
       JSON.stringify({ responses, currentSectionIndex, savedAt: now }),
     );
     setSavedAt(now);
-  }, [currentSectionIndex, responses]);
+  }, [currentSectionIndex, draftStorageKey, isPreview, responses]);
 
-  const currentSection = surveySections[currentSectionIndex];
-  const completedSections = surveySections.filter((s) => sectionIsComplete(s, responses)).length;
-  const progress = Math.round((completedSections / surveySections.length) * 100);
+  const currentSection = schema.sections[currentSectionIndex];
+  const completedSections = schema.sections.filter((section) =>
+    sectionIsComplete(schema, section, responses),
+  ).length;
+  const progress = Math.round((completedSections / schema.sections.length) * 100);
 
   const updateValue = (key: string, value: string) => {
     setResponses((current) => ({ ...current, [key]: value }));
   };
 
-  const toggleCheckboxValue = (field: CheckboxField, optionValue: string) => {
+  const toggleCheckboxValue = (field: CheckboxFieldDefinition, optionValue: string) => {
     setResponses((current) => {
       const selected = getArrayValue(current, field.key);
       const hasValue = selected.includes(optionValue);
       let nextSelection = hasValue
-        ? selected.filter((v) => v !== optionValue)
+        ? selected.filter((value) => value !== optionValue)
         : [...selected, optionValue];
-      if (optionValue === "none" && !hasValue) nextSelection = ["none"];
-      else if (optionValue !== "none") nextSelection = nextSelection.filter((v) => v !== "none");
+
+      if (optionValue === "none" && !hasValue) {
+        nextSelection = ["none"];
+      } else if (optionValue !== "none") {
+        nextSelection = nextSelection.filter((value) => value !== "none");
+      }
+
       return { ...current, [field.key]: nextSelection };
     });
   };
 
   const goToSection = (index: number) => {
     if (index > currentSectionIndex) {
-      const msg = getSectionValidationMessage(currentSection, responses);
-      if (msg) { addToast(msg, "warning"); return; }
+      const message = getSectionValidationMessage(schema, currentSection, responses);
+      if (message) {
+        addToast(message, "warning");
+        return;
+      }
     }
-    startNavigation(() => { setCurrentSectionIndex(index); scrollToTop(); });
+
+    startNavigation(() => {
+      setCurrentSectionIndex(index);
+      scrollToTop();
+    });
   };
 
   const handleNext = () => {
-    const msg = getSectionValidationMessage(currentSection, responses);
-    if (msg) { addToast(msg, "warning"); return; }
+    const message = getSectionValidationMessage(schema, currentSection, responses);
+    if (message) {
+      addToast(message, "warning");
+      return;
+    }
+
     startNavigation(() => {
-      setCurrentSectionIndex((i) => Math.min(i + 1, surveySections.length - 1));
+      setCurrentSectionIndex((index) => Math.min(index + 1, schema.sections.length - 1));
       scrollToTop();
     });
   };
 
   const handlePrevious = () => {
     startNavigation(() => {
-      setCurrentSectionIndex((i) => Math.max(i - 1, 0));
+      setCurrentSectionIndex((index) => Math.max(index - 1, 0));
       scrollToTop();
     });
   };
 
   const clearDraft = () => {
-    skipNextDraftSave.current = true;
-    window.localStorage.removeItem(DRAFT_STORAGE_KEY);
+    if (!isPreview) {
+      skipNextDraftSave.current = true;
+      window.localStorage.removeItem(draftStorageKey);
+    }
+
     setResponses({});
     setCurrentSectionIndex(0);
     setToasts([]);
@@ -743,25 +706,34 @@ export function SurveyForm() {
   };
 
   const submitSurvey = async () => {
-    for (let i = 0; i < surveySections.length; i++) {
-      const msg = getSectionValidationMessage(surveySections[i], responses);
-      if (msg) {
-        setCurrentSectionIndex(i);
-        addToast(msg, "warning");
+    for (let index = 0; index < schema.sections.length; index += 1) {
+      const message = getSectionValidationMessage(schema, schema.sections[index], responses);
+      if (message) {
+        setCurrentSectionIndex(index);
+        addToast(message, "warning");
         scrollToTop();
         return;
       }
     }
+
+    if (isPreview) {
+      addToast("Önizleme geçerli görünüyor. Yayınlamak için taslağı kaydedin.", "info");
+      return;
+    }
+
     setIsSubmitting(true);
     try {
       const response = await fetch("/api/submissions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ responses }),
+        body: JSON.stringify({ responses, surveyVersionId: versionId }),
       });
       const data = (await response.json()) as { error?: string; id?: string };
-      if (!response.ok || !data.id) throw new Error(data.error ?? "Yanıtlar kaydedilemedi.");
-      window.localStorage.removeItem(DRAFT_STORAGE_KEY);
+      if (!response.ok || !data.id) {
+        throw new Error(data.error ?? "Yanıtlar kaydedilemedi.");
+      }
+
+      window.localStorage.removeItem(draftStorageKey);
       setSubmissionState({ type: "success", referenceId: data.id });
       scrollToTop();
     } catch (error) {
@@ -792,43 +764,46 @@ export function SurveyForm() {
         </div>
 
         <div className="success-screen__actions no-print">
-          <button
-            className="primary-button"
-            type="button"
-            onClick={() => window.print()}
-          >
+          <button className="primary-button" type="button" onClick={() => window.print()}>
             PDF olarak indir
           </button>
         </div>
 
-        <SurveyResults responses={responses} />
+        <SurveyResults responses={responses} schema={schema} />
       </div>
     );
   }
 
   return (
     <>
+      {isPreview ? (
+        <div className="preview-banner">
+          <strong>Canlı önizleme</strong>
+          <span>Kaydetmeden önce taslağın akışını ve doğrulamalarını test edin.</span>
+        </div>
+      ) : null}
+
       <div
+        aria-valuemax={100}
+        aria-valuemin={0}
+        aria-valuenow={progress}
         className="form-progress"
         role="progressbar"
-        aria-valuenow={progress}
-        aria-valuemin={0}
-        aria-valuemax={100}
       >
         <div className="form-progress__bar" style={{ width: `${progress}%` }} />
       </div>
 
       <section id="anket">
-        <nav className="form-steps" aria-label="Bölüm adımları">
-          {surveySections.map((section, index) => {
+        <nav aria-label="Bölüm adımları" className="form-steps">
+          {schema.sections.map((section, index) => {
             const isCurrent = index === currentSectionIndex;
-            const isCompleted = sectionIsComplete(section, responses);
+            const isCompleted = sectionIsComplete(schema, section, responses);
             return (
               <button
                 key={section.id}
                 className={`form-step${isCurrent ? " form-step--active" : ""}${isCompleted && !isCurrent ? " form-step--done" : ""}`}
-                type="button"
                 title={section.title}
+                type="button"
                 onClick={() => goToSection(index)}
               >
                 {index + 1}
@@ -843,7 +818,7 @@ export function SurveyForm() {
             <h2>{currentSection.title}</h2>
             <p className="survey-panel__description">{currentSection.description}</p>
             <p className="section-counter">
-              Bölüm {currentSectionIndex + 1} / {surveySections.length} · {progress}% tamamlandı
+              Bölüm {currentSectionIndex + 1} / {schema.sections.length} · {progress}% tamamlandı
             </p>
           </header>
 
@@ -852,7 +827,7 @@ export function SurveyForm() {
               ? currentSection.fields?.map((field) => (
                   <RenderField
                     field={field}
-                    key={field.key}
+                    key={field.id}
                     onCheckboxToggle={toggleCheckboxValue}
                     onValueChange={updateValue}
                     responses={responses}
@@ -860,10 +835,18 @@ export function SurveyForm() {
                 ))
               : null}
             {currentSection.type === "ffq" ? (
-              <FoodFrequencySection onValueChange={updateValue} responses={responses} />
+              <FoodFrequencySection
+                onValueChange={updateValue}
+                responses={responses}
+                schema={schema}
+              />
             ) : null}
             {currentSection.type === "upf" ? (
-              <UltraProcessedSection onValueChange={updateValue} responses={responses} />
+              <UltraProcessedSection
+                onValueChange={updateValue}
+                responses={responses}
+                schema={schema}
+              />
             ) : null}
           </div>
 
@@ -876,7 +859,7 @@ export function SurveyForm() {
             >
               Önceki
             </button>
-            {currentSectionIndex < surveySections.length - 1 ? (
+            {currentSectionIndex < schema.sections.length - 1 ? (
               <button
                 className="primary-button"
                 disabled={isNavigating || isSubmitting}
@@ -892,23 +875,26 @@ export function SurveyForm() {
                 type="button"
                 onClick={submitSurvey}
               >
-                {isSubmitting ? "Kaydediliyor..." : "Yanıtları kaydet"}
+                {isSubmitting
+                  ? "Kaydediliyor..."
+                  : isPreview
+                    ? "Önizlemeyi doğrula"
+                    : "Yanıtları kaydet"}
               </button>
             )}
           </footer>
         </div>
       </section>
 
-      {/* Toast container */}
       {toasts.length > 0 ? (
-        <div className="toast-container" role="alert" aria-live="polite">
+        <div aria-live="polite" className="toast-container" role="alert">
           {toasts.map((toast) => (
             <div key={toast.id} className={`toast toast--${toast.kind}`}>
               <span>{toast.message}</span>
               <button
+                aria-label="Kapat"
                 className="toast__close"
                 type="button"
-                aria-label="Kapat"
                 onClick={() => dismissToast(toast.id)}
               >
                 ✕
@@ -918,26 +904,24 @@ export function SurveyForm() {
         </div>
       ) : null}
 
-      {/* Info button */}
       <button
+        aria-label="Çalışma hakkında bilgi"
         className="info-btn"
         type="button"
-        aria-label="Çalışma hakkında bilgi"
         onClick={() => setInfoOpen(true)}
       >
         i
       </button>
 
-      {/* Info modal */}
       {infoOpen ? (
         <div className="info-modal-overlay" onClick={() => setInfoOpen(false)}>
-          <div className="info-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="info-modal" onClick={(event) => event.stopPropagation()}>
             <div className="info-modal__header">
               <h2 className="info-modal__title">Çalışma hakkında</h2>
               <button
+                aria-label="Kapat"
                 className="info-modal__close"
                 type="button"
-                aria-label="Kapat"
                 onClick={() => setInfoOpen(false)}
               >
                 ✕
@@ -958,15 +942,18 @@ export function SurveyForm() {
             <div className="info-section">
               <p className="info-section__title">Bölümlere geç</p>
               <nav className="modal-nav">
-                {surveySections.map((section, index) => {
+                {schema.sections.map((section, index) => {
                   const isCurrent = index === currentSectionIndex;
-                  const isCompleted = sectionIsComplete(section, responses);
+                  const isCompleted = sectionIsComplete(schema, section, responses);
                   return (
                     <button
                       key={section.id}
                       className={`modal-nav-btn${isCurrent ? " modal-nav-btn--active" : ""}${isCompleted ? " modal-nav-btn--done" : ""}`}
                       type="button"
-                      onClick={() => { goToSection(index); setInfoOpen(false); }}
+                      onClick={() => {
+                        goToSection(index);
+                        setInfoOpen(false);
+                      }}
                     >
                       <span className="modal-nav-btn__num">{index + 1}</span>
                       {section.title}
@@ -988,14 +975,19 @@ export function SurveyForm() {
 
             <div className="info-section">
               <p className="info-section__title">Taslak</p>
-              <p className="saved-note">Son kayıt: {formatSavedAt(savedAt)}</p>
+              <p className="saved-note">
+                {isPreview ? "Önizleme modunda yerel taslak tutulmaz." : `Son kayıt: ${formatSavedAt(savedAt)}`}
+              </p>
               <button
                 className="ghost-button"
+                style={{ fontSize: "0.85rem", marginTop: 10, minHeight: 36 }}
                 type="button"
-                style={{ marginTop: 10, fontSize: "0.85rem", minHeight: 36 }}
-                onClick={() => { clearDraft(); setInfoOpen(false); }}
+                onClick={() => {
+                  clearDraft();
+                  setInfoOpen(false);
+                }}
               >
-                Yerel taslağı temizle
+                {isPreview ? "Yanıtları sıfırla" : "Yerel taslağı temizle"}
               </button>
             </div>
           </div>
